@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: lototracker-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SUPABASE_URL
+        value: https://vtzcovlgccsjsbqvxcqx.supabase.co
+      - key: SUPABASE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0emNvdmxnY2NzanNicXZ4Y3F4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NDkzNjQsImV4cCI6MjA4OTAyNTM2NH0.47VgTctMZw4WUJiWr8_dMW5lZx60vdpvDqT9v4bWLfg
