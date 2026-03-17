@@ -75,6 +75,45 @@ NORMALIZAR = {
 }
 
 
+URL_ASTRO = "https://superastro.com.co/resultados-super-astro-sol-super-astro-luna.php"
+
+def _obtener_signos_astro() -> dict:
+    """
+    Scrape superastro.com.co para obtener numero+signo de Sol y Luna.
+    Retorna: {"sol": {"numero": "5242", "signo": "Acuario", "fecha": "2026-03-16"},
+              "luna": {...}}
+    """
+    try:
+        resp = requests.get(URL_ASTRO, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        
+        # Tabla con columnas: NÚMERO | SIGNO | SORTEO | FECHA
+        tablas = soup.find_all("table")
+        resultado = {}
+        
+        for i, tabla in enumerate(tablas):
+            filas = tabla.find_all("tr")
+            for fila in filas[1:2]:  # Solo primera fila de datos
+                celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
+                if len(celdas) >= 4:
+                    numero = celdas[0]
+                    signo  = celdas[1]
+                    fecha  = celdas[3]
+                    if re.match(r"\d{4}", numero) and signo:
+                        clave = "sol" if i == 0 else "luna"
+                        resultado[clave] = {
+                            "numero": numero,
+                            "signo":  signo,
+                            "fecha":  fecha,
+                        }
+        return resultado
+    except Exception as e:
+        logger.warning(f"No se pudo obtener signos astro: {e}")
+        return {}
+
+
+
 def _es_noche(nombre: str) -> bool:
     return nombre.lower().strip() in LOTERIAS_NOCHE
 
@@ -151,6 +190,15 @@ def obtener_sorteos_colombia() -> dict:
             "fecha":    fecha,
         }
         (noche if es_noche else dia).append(sorteo)
+
+    # Agregar signos zodiacales a Astro Sol y Astro Luna
+    signos = _obtener_signos_astro()
+    for sorteo in dia + noche:
+        n = sorteo["nombre"].lower()
+        if "astro sol" in n and "sol" in signos:
+            sorteo["signo"] = signos["sol"]["signo"]
+        elif "astro luna" in n and "luna" in signos:
+            sorteo["signo"] = signos["luna"]["signo"]
 
     logger.info(f"chancehoy.com OK: DIA={len(dia)}, NOCHE={len(noche)}")
     return {"DIA": dia, "NOCHE": noche, "LOTERIAS": []}
