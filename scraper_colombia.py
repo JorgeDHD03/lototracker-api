@@ -5,7 +5,7 @@ Fuente: https://www.chancehoy.com/
 No bloquea servidores en la nube.
 """
 
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from datetime import date, timedelta
 import re
@@ -84,7 +84,7 @@ def _obtener_signos_astro() -> dict:
               "luna": {...}}
     """
     try:
-        resp = requests.get(URL_ASTRO, headers=HEADERS, timeout=15)
+        resp = requests.get(URL_ASTRO, headers=HEADERS, timeout=15, impersonate="chrome110")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
         
@@ -132,7 +132,7 @@ def obtener_sorteos_colombia() -> dict:
     ayer = hoy - timedelta(days=1)
 
     try:
-        resp = requests.get(URL, headers=HEADERS, timeout=20)
+        resp = requests.get(URL, headers=HEADERS, timeout=20, impersonate="chrome110")
         resp.raise_for_status()
     except Exception as e:
         logger.error(f"Error chancehoy.com: {e}")

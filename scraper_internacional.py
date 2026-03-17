@@ -11,7 +11,7 @@ HTML CONFIRMADO:
   nylottery:  td[1] contiene 8 spans.resultBall — primeros 4 = WM, últimos 4 = WN
 """
 
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 import re
 import logging
@@ -28,7 +28,7 @@ HEADERS = {
 
 
 def _get_soup(url: str) -> BeautifulSoup:
-    r = requests.get(url, headers=HEADERS, timeout=15)
+    r = requests.get(url, headers=HEADERS, timeout=15, impersonate="chrome110")
     r.raise_for_status()
     return BeautifulSoup(r.text, "html.parser")
 
