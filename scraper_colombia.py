@@ -155,13 +155,25 @@ def obtener_sorteos_colombia() -> dict:
     soup = BeautifulSoup(resp.text, "lxml")
     html = resp.text
 
-    pos_hoy  = html.lower().find("resultados de hoy")
-    pos_ayer = html.lower().find("resultados de ayer")
+    # Extraer SOLO la sección HOY del HTML
+    # chancehoy.com muestra HOY y AYER en la misma página
+    # Cortamos el HTML desde "resultados de hoy" hasta "resultados de ayer"
+    html_lower = html.lower()
+    pos_hoy  = html_lower.find("resultados de hoy")
+    pos_ayer = html_lower.find("resultados de ayer")
 
+    if pos_hoy >= 0 and pos_ayer > pos_hoy:
+        html_hoy = html[pos_hoy:pos_ayer]
+    elif pos_hoy >= 0:
+        html_hoy = html[pos_hoy:]
+    else:
+        html_hoy = html
+
+    soup_hoy = BeautifulSoup(html_hoy, "lxml")
     dia, noche, vistos = [], [], set()
 
-    # Buscar todos los box-post con href /sorteo
-    for a in soup.find_all("a", class_="box-post"):
+    # Buscar solo en la sección HOY
+    for a in soup_hoy.find_all("a", class_="box-post"):
         href = a.get("href", "")
         if "/sorteo" not in href:
             continue
@@ -195,12 +207,8 @@ def obtener_sorteos_colombia() -> dict:
         nombre = NORMALIZAR.get(nombre_raw, nombre_raw)
         es_noche = _es_noche(nombre)
 
-        # Determinar fecha por posición en HTML
-        pos = html.find(href)
-        if pos_ayer > 0 and pos > pos_ayer:
-            fecha = ayer.isoformat()
-        else:
-            fecha = ayer.isoformat() if es_noche else hoy.isoformat()
+        # Fecha: DÍA = hoy, NOCHE = ayer (se publican al día siguiente)
+        fecha = ayer.isoformat() if es_noche else hoy.isoformat()
 
         # Deduplicar
         clave = f"{nombre}_{fecha}"
