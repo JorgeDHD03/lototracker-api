@@ -208,19 +208,38 @@ def sorteos_fecha(fecha: str):
 
 @app.get("/debug_html")
 def debug_html():
-    """Retorna los primeros 3000 chars del HTML de chancehoy para diagnóstico."""
+    """Retorna fragmentos del HTML de chancehoy para diagnóstico."""
     try:
         from curl_cffi import requests as creq
+        from bs4 import BeautifulSoup
+        import re
         resp = creq.get(
             "https://www.chancehoy.com/",
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
             timeout=20,
             impersonate="chrome110"
         )
+        html = resp.text
+        soup = BeautifulSoup(html, "lxml")
+        # Find all links to sorteos
+        links = soup.find_all("a", href=re.compile(r"/sorteo"))
+        link_samples = []
+        for a in links[:5]:
+            link_samples.append({
+                "href": a.get("href"),
+                "text": a.get_text(separator="|").strip()[:100]
+            })
+        # Find number patterns
+        nums = re.findall(r"\d{4}", html)[:20]
+        # Sample from middle of HTML
+        mid = len(html)//2
         return {
             "status": resp.status_code,
             "html_length": len(resp.text),
-            "html_sample": resp.text[:3000],
+            "sorteo_links_found": len(links),
+            "link_samples": link_samples,
+            "numbers_found": nums,
+            "html_mid_500": html[mid:mid+500],
         }
     except Exception as e:
         return {"error": str(e)}
