@@ -130,6 +130,7 @@ def obtener_sorteos_colombia() -> dict:
     soup = BeautifulSoup(r.text, "html.parser")
 
     data = {"DIA": [], "NOCHE": [], "LOTERIAS": []}
+    _noche_tiene_hoy = False
 
     # ── 1) CHANCES ──────────────────────────────────────────
     for bloque in soup.select("div.chances_hoy"):
