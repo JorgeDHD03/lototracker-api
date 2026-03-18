@@ -98,9 +98,10 @@ def obtener_sorteos_internacional() -> dict:
       DIA   (P3_DIA, P4_DIA, WM)          → fecha_dia   = hoy
       NOCHE (P3_NOCHE, P4_NOCHE, WN, EV)  → fecha_noche = ayer
     """
-    from datetime import date, timedelta
-    hoy  = date.today().isoformat()
-    ayer = (date.today() - timedelta(days=1)).isoformat()
+    from datetime import date, timedelta, datetime, timezone
+    colombia_tz = timezone(timedelta(hours=-5))
+    hoy  = datetime.now(colombia_tz).date().isoformat()
+    ayer = (datetime.now(colombia_tz).date() - timedelta(days=1)).isoformat()
 
     win4 = _win4()
     return {
