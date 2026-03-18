@@ -176,13 +176,10 @@ def obtener_sorteos_colombia() -> dict:
 
         es_nocturno = _es_noche(nombre)
         if es_nocturno:
-            # NOCHE: acepta ayer siempre; acepta hoy si ya son >= 19:00
-            if fecha == ayer:
-                pass  # normal
-            elif fecha == hoy and noche_acepta_hoy:
-                pass  # resultados de esta noche ya disponibles
-            else:
+            # NOCHE: acepta ayer o hoy, pero SIEMPRE guarda con fecha = ayer
+            if fecha not in (ayer, hoy):
                 continue
+            fecha = ayer  # forzar fecha correcta
         else:
             # DÍA: solo fecha de hoy
             if fecha != hoy:
