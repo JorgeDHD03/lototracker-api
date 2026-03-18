@@ -204,3 +204,23 @@ def sorteos_fecha(fecha: str):
         "loterias": loterias.data,
         "int":      ints.data,
     }
+
+
+@app.get("/debug_html")
+def debug_html():
+    """Retorna los primeros 3000 chars del HTML de chancehoy para diagnóstico."""
+    try:
+        from curl_cffi import requests as creq
+        resp = creq.get(
+            "https://www.chancehoy.com/",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            timeout=20,
+            impersonate="chrome110"
+        )
+        return {
+            "status": resp.status_code,
+            "html_length": len(resp.text),
+            "html_sample": resp.text[:3000],
+        }
+    except Exception as e:
+        return {"error": str(e)}
