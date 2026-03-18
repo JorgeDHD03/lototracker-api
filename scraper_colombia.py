@@ -1,239 +1,270 @@
 """
-scraper_colombia.py — Scraper para chancehoy.com
-=================================================
-HTML confirmado:
-  <a class="box-post" href="/sorteo?s=nombre-sorteo">
-    <p class="box-post-title">Nombre Sorteo</p>
-    <span class="score">4</span><span class="score">1</span>...  (4 digitos)
-    <span class="score-quinta">3</span>  (serie, opcional, clase diferente)
-  </a>
+Scraper para https://loteriasdehoy.co
+
+ESTRUCTURA HTML CONFIRMADA:
+
+CHANCES (div.chances_hoy):
+  span.chance1 x4 = número | span.premio5 x1 = serie opcional
+
+LOTERIAS GRANDES (div.loterias_resultados):
+  span.redondoc.premio1 x4 = número | span.redondoc.serie1 x3 = serie
+
+REGLA DE FECHAS:
+  DIA      → fecha = HOY
+  NOCHE    → fecha = AYER  (loterías nocturnas, se publican al día siguiente)
+  LOTERIAS → fecha = AYER  (loterías grandes también se publican al día siguiente)
 """
 
 from curl_cffi import requests
 from bs4 import BeautifulSoup
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import re
 import logging
 
 logger = logging.getLogger(__name__)
 
-URL = "https://www.chancehoy.com/"
+URL = "https://loteriasdehoy.co"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/122.0.0.0 Safari/537.36"
     )
 }
 
-URL_ASTRO = "https://superastro.com.co/resultados-super-astro-sol-super-astro-luna.php"
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+    "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+    "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+}
 
 LOTERIAS_NOCHE = {
-    "astro luna", "caribeña noche", "sinuano noche", "motilon noche",
-    "fantastica noche", "fantástica noche", "culona noche",
-    "cafeterito noche", "chontico noche", "super chontico noche",
-    "paisita noche", "dorado noche", "super astro luna",
+    "astro luna",
+    "caribeña noche",
+    "sinuano noche",
+    "motilon noche",
+    "fantastica noche",
+    "culona noche",
+    "cafeterito noche",
+    "chontico noche",
+    "super chontico noche",
+    "paisita noche",
 }
 
-EXCLUIR = {
-    "pick 4", "pick 3", "pick 4 dia", "pick 4 día",
-    "pick 4 noche", "pick 3 dia", "pick 3 día", "pick 3 noche",
-    "pick4", "pick3",
+EXCLUIR_NOMBRES = {"pick 3", "pick 4"}
+
+NOMBRES_COMPLETOS = {
+    "culona día", "culona noche",
+    "chontico día", "chontico noche", "super chontico noche",
+    "saman",
 }
 
-ACRONIMOS = {
-    "cafeterito noche":   "CFN",
-    "cafeterito tarde":   "CF",
-    "caribeña día":       "C",
-    "caribeña dia":       "C",
-    "caribeña noche":     "CN",
-    "sinuano día":        "S",
-    "sinuano dia":        "S",
-    "sinuano noche":      "SN",
-    "antioqueñita 1":     "AM",
-    "antioqueñita dia":   "AM",
-    "antioqueñita día":   "AM",
-    "antioqueñita 2":     "AT",
-    "antioqueñita tarde": "AT",
-    "dorado mañana":      "DM",
-    "dorado tarde":       "DT",
-    "dorado noche":       "DN",
-    "motilon tarde":      "MT",
-    "motilon dia":        "MT",
-    "motilon día":        "MT",
-    "motilon noche":      "MTN",
-    "paisita día":        "P",
-    "paisita dia":        "P",
-    "paisita noche":      "PN",
-    "fantastica día":     "F",
-    "fantastica dia":     "F",
-    "fantástica dia":     "F",
-    "fantástica día":     "F",
-    "fantastica noche":   "FN",
-    "fantástica noche":   "FN",
-    "pijao de oro":       "PJ",
-    "astro sol":          "AS",
-    "super astro sol":    "AS",
-    "astro luna":         "AL",
-    "super astro luna":   "AL",
+ACRONIMOS_FIJOS = {
+    "cafeterito noche":  "CFN",
+    "cafeterito tarde":  "CF",
+    "caribeña día":      "C",
+    "caribeña noche":    "CN",
+    "sinuano día":       "S",
+    "sinuano noche":     "SN",
+    "antioqueñita 1":    "AM",
+    "antioqueñita 2":    "AT",
+    "dorado mañana":     "DM",
+    "dorado tarde":      "DT",
+    "dorado noche":      "DN",
+    "motilon tarde":     "MT",
+    "motilon noche":     "MTN",
+    "paisita día":       "P",
+    "paisita noche":     "PN",
+    "fantastica día":    "F",
+    "fantastica noche":  "FN",
+    "pijao de oro":      "PJ",
+    "astro sol":         "AS",
+    "astro luna":        "AL",
 }
 
-NORMALIZAR = {
-    "Antioqueñita Dia":    "Antioqueñita 1",
-    "Antioqueñita Día":    "Antioqueñita 1",
-    "Antioqueñita Tarde":  "Antioqueñita 2",
-    "Motilon Dia":         "Motilon Tarde",
-    "Motilon Día":         "Motilon Tarde",
-    "Fantástica Dia":      "Fantastica Día",
-    "Fantástica Día":      "Fantastica Día",
-    "Fantástica Noche":    "Fantastica Noche",
-    "Super Astro Sol":     "Astro Sol",
-    "Super Astro Luna":    "Astro Luna",
-    "Saman De La Suerte":  "Saman",
-    "Caribeña Dia":        "Caribeña Día",
-    "Sinuano Dia":         "Sinuano Día",
-    "Chontico Dia":        "Chontico Día",
-    "Culona Dia":          "Culona Día",
-    "Paisita Dia":         "Paisita Día",
-}
+
+def _parsear_fecha(texto: str):
+    texto = re.sub(r"\bde\b", "", texto.lower().strip())
+    partes = texto.split()
+    try:
+        dia  = int(partes[0])
+        mes  = MESES_ES.get(partes[1])
+        anio = int(partes[2])
+        if mes:
+            return date(anio, mes, dia)
+    except (IndexError, ValueError):
+        pass
+    return None
 
 
 def _es_noche(nombre: str) -> bool:
-    return nombre.lower().strip() in LOTERIAS_NOCHE
+    return any(ln in nombre.lower().strip() for ln in LOTERIAS_NOCHE)
+
+
+def _es_excluido(nombre: str) -> bool:
+    return any(p in nombre.lower() for p in EXCLUIR_NOMBRES)
 
 
 def _generar_acronimo(nombre: str) -> str:
     clave = nombre.lower().strip()
-    if clave in ACRONIMOS:
-        return ACRONIMOS[clave]
-    partes = clave.split()
-    return "".join(p[0].upper() for p in partes
-                   if p not in ("de", "la", "el", "los", "las", "del"))
-
-
-def _obtener_signos_astro() -> dict:
-    try:
-        resp = requests.get(URL_ASTRO, headers=HEADERS, timeout=15,
-                            impersonate="chrome110")
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        tablas = soup.find_all("table")
-        resultado = {}
-        for i, tabla in enumerate(tablas):
-            filas = tabla.find_all("tr")
-            for fila in filas[1:2]:
-                celdas = [td.get_text(strip=True) for td in fila.find_all("td")]
-                if len(celdas) >= 4:
-                    numero = celdas[0]
-                    signo  = celdas[1]
-                    fecha  = celdas[3]
-                    if re.match(r"\d{4}", numero) and signo:
-                        clave = "sol" if i == 0 else "luna"
-                        resultado[clave] = {
-                            "numero": numero,
-                            "signo":  signo,
-                            "fecha":  fecha,
-                        }
-        return resultado
-    except Exception as e:
-        logger.warning(f"No se pudo obtener signos astro: {e}")
-        return {}
+    if clave in NOMBRES_COMPLETOS:
+        return nombre.strip()
+    if clave in ACRONIMOS_FIJOS:
+        return ACRONIMOS_FIJOS[clave]
+    palabras = nombre.split()
+    acronimo = "".join(p[0].upper() for p in palabras if p and p[0].isalpha())
+    return acronimo[:4] if acronimo else "??"
 
 
 def obtener_sorteos_colombia() -> dict:
-    hoy  = date.today()
-    ayer = hoy - timedelta(days=1)
+    hoy   = date.today()
+    ayer  = hoy - timedelta(days=1)
+    hora  = datetime.now().hour
+    # Si ya pasaron las 19:00, los sorteos noche de HOY ya pueden estar publicados
+    # Aceptamos fecha=hoy O fecha=ayer para NOCHE
+    noche_acepta_hoy = hora >= 19
+    incluir_super_chontico = (ayer.weekday() == 3)  # solo jueves
 
-    try:
-        resp = requests.get(URL, headers=HEADERS, timeout=20,
-                            impersonate="chrome110")
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error(f"Error chancehoy.com: {e}")
-        return {"DIA": [], "NOCHE": [], "LOTERIAS": []}
+    r = requests.get(URL, headers=HEADERS, timeout=15, impersonate="chrome110")
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    html = resp.text
+    data = {"DIA": [], "NOCHE": [], "LOTERIAS": []}
 
-    # Extraer SOLO la sección HOY del HTML
-    # chancehoy.com muestra HOY y AYER en la misma página
-    # Cortamos el HTML desde "resultados de hoy" hasta "resultados de ayer"
-    html_lower = html.lower()
-    pos_hoy  = html_lower.find("resultados de hoy")
-    pos_ayer = html_lower.find("resultados de ayer")
+    # ── 1) CHANCES ──────────────────────────────────────────
+    for bloque in soup.select("div.chances_hoy"):
+        titulo_tag = bloque.select_one("div.titulo_chances_hoy")
+        if not titulo_tag:
+            continue
+        nombre = titulo_tag.get_text(strip=True)
 
-    if pos_hoy >= 0 and pos_ayer > pos_hoy:
-        html_hoy = html[pos_hoy:pos_ayer]
-    elif pos_hoy >= 0:
-        html_hoy = html[pos_hoy:]
-    else:
-        html_hoy = html
-
-    soup_hoy = BeautifulSoup(html_hoy, "lxml")
-    dia, noche, vistos = [], [], set()
-
-    # Buscar solo en la sección HOY
-    for a in soup_hoy.find_all("a", class_="box-post"):
-        href = a.get("href", "")
-        if "/sorteo" not in href:
+        if _es_excluido(nombre):
+            continue
+        if "super chontico" in nombre.lower() and not incluir_super_chontico:
             continue
 
-        # Nombre del sorteo
-        titulo = a.find("p", class_="box-post-title")
-        if not titulo:
+        fecha_tag = bloque.select_one("div.fecha_resultado")
+        if not fecha_tag:
             continue
-        nombre_raw = titulo.get_text(strip=True).title()
-
-        # Excluir internacionales
-        if nombre_raw.lower().strip() in EXCLUIR:
-            continue
-        if any(ex in nombre_raw.lower() for ex in ["pick 3", "pick 4"]):
+        fecha = _parsear_fecha(fecha_tag.get_text(strip=True))
+        if fecha is None:
             continue
 
-        # Dígitos del número (spans con clase "score")
-        scores = a.find_all("span", class_="score")
-        digitos = [s.get_text(strip=True) for s in scores if s.get_text(strip=True).isdigit()]
+        es_nocturno = _es_noche(nombre)
+        if es_nocturno:
+            # NOCHE: acepta ayer siempre; acepta hoy si ya son >= 19:00
+            if fecha == ayer:
+                pass  # normal
+            elif fecha == hoy and noche_acepta_hoy:
+                pass  # resultados de esta noche ya disponibles
+            else:
+                continue
+        else:
+            # DÍA: solo fecha de hoy
+            if fecha != hoy:
+                continue
+
+        resultado_div = bloque.select_one("div.resultado_chances_hoy")
+        if not resultado_div:
+            continue
+
+        # Número: spans chance1 (4 dígitos)
+        spans = resultado_div.select("span.chance1")
+        if not spans:
+            spans = resultado_div.select("span.redondoc")
+        digitos = [s.get_text(strip=True) for s in spans if s.get_text(strip=True).isdigit()]
+
         if len(digitos) < 4:
             continue
+
         numero = "".join(digitos[:4])
 
-        # Serie (span con clase "score-quinta")
-        quinta = a.find("span", class_="score-quinta")
-        serie = quinta.get_text(strip=True) if quinta else None
-        if serie and not serie.isdigit():
-            serie = None
+        # Serie: span.premio5
+        serie = None
+        span_serie = resultado_div.select_one("span.premio5")
+        if span_serie:
+            t = span_serie.get_text(strip=True)
+            if t.isdigit():
+                serie = t
 
-        # Normalizar nombre
-        nombre = NORMALIZAR.get(nombre_raw, nombre_raw)
-        es_noche = _es_noche(nombre)
+        # Signo zodiacal
+        signo = None
+        m = re.search(r"-\s*([A-Za-záéíóúÁÉÍÓÚñÑ]+)", resultado_div.get_text(strip=True))
+        if m:
+            signo = m.group(1).strip()
 
-        # Fecha: DÍA = hoy, NOCHE = ayer (se publican al día siguiente)
-        fecha = ayer.isoformat() if es_noche else hoy.isoformat()
-
-        # Deduplicar
-        clave = f"{nombre}_{fecha}"
-        if clave in vistos:
-            continue
-        vistos.add(clave)
-
-        sorteo = {
-            "nombre":   nombre,
-            "acronimo": _generar_acronimo(nombre),
+        item = {
             "numero":   numero,
+            "acronimo": _generar_acronimo(nombre),
+            "nombre":   nombre,
+            "serie":    serie,
+            "signo":    signo,
+            "fecha":    fecha.isoformat(),
+        }
+        # Deduplicar: la página muestra cada lotería varias veces ordenada de más
+        # reciente a más antigua. Solo guardar la primera aparición de cada nombre.
+        if es_nocturno:
+            if nombre.lower() not in {x["nombre"].lower() for x in data["NOCHE"]}:
+                data["NOCHE"].append(item)
+                if fecha == hoy:
+                    _noche_tiene_hoy = True
+        else:
+            if nombre.lower() not in {x["nombre"].lower() for x in data["DIA"]}:
+                data["DIA"].append(item)
+
+    # Si NOCHE tiene resultados de HOY, descartar los de AYER para no mezclar fechas
+    if _noche_tiene_hoy:
+        data["NOCHE"] = [s for s in data["NOCHE"] if s["fecha"] == hoy.isoformat()]
+
+    # ── 2) LOTERÍAS GRANDES → fecha de AYER ─────────────────
+    # Confirmado: la página publica las loterías grandes con fecha
+    # del día anterior (ej: hoy es martes 3, muestra "2 Marzo 2026")
+    for bloque in soup.select("div.loterias_resultados"):
+        h3 = bloque.find("h3")
+        if not h3:
+            continue
+        nombre = h3.get_text(strip=True).strip()
+
+        fecha_tag = bloque.select_one("div.fecha_resultado")
+        if not fecha_tag:
+            continue
+        fecha = _parsear_fecha(fecha_tag.get_text(strip=True))
+        if fecha is None:
+            continue
+
+        # Aceptar fecha de ayer O de hoy (por si acaso publican el mismo día)
+        if fecha not in (ayer, hoy):
+            logger.debug(f"Lotería '{nombre}' ignorada: fecha {fecha} no es hoy ni ayer")
+            continue
+
+        # Número: 4 spans con clase premio1
+        spans_numero = bloque.select("span.premio1")
+        digitos_numero = [s.get_text(strip=True) for s in spans_numero
+                          if s.get_text(strip=True).isdigit()]
+
+        if len(digitos_numero) < 4:
+            logger.debug(f"Lotería '{nombre}': solo {len(digitos_numero)} dígitos")
+            continue
+
+        numero = "".join(digitos_numero[:4])
+
+        # Serie: spans con clase serie1 (3 dígitos)
+        spans_serie = bloque.select("span.serie1")
+        digitos_serie = [s.get_text(strip=True) for s in spans_serie
+                         if s.get_text(strip=True).isdigit()]
+        serie = "".join(digitos_serie) if digitos_serie else None
+
+        data["LOTERIAS"].append({
+            "numero":   numero,
+            "acronimo": _generar_acronimo(nombre),
+            "nombre":   nombre,
             "serie":    serie,
             "signo":    None,
-            "fecha":    fecha,
-        }
-        (noche if es_noche else dia).append(sorteo)
+            "fecha":    fecha.isoformat(),
+        })
 
-    # Agregar signos zodiacales
-    signos = _obtener_signos_astro()
-    for sorteo in dia + noche:
-        n = sorteo["nombre"].lower()
-        if "astro sol" in n and "sol" in signos:
-            sorteo["signo"] = signos["sol"]["signo"]
-        elif "astro luna" in n and "luna" in signos:
-            sorteo["signo"] = signos["luna"]["signo"]
-
-    logger.info(f"chancehoy.com OK: DIA={len(dia)}, NOCHE={len(noche)}")
-    return {"DIA": dia, "NOCHE": noche, "LOTERIAS": []}
+    logger.info(
+        f"DIA: {len(data['DIA'])} | NOCHE: {len(data['NOCHE'])} "
+        f"| LOTERIAS: {len(data['LOTERIAS'])}"
+    )
+    return data
