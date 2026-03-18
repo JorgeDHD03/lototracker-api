@@ -14,7 +14,7 @@ Endpoints:
 
 import os
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -125,9 +125,12 @@ def consultar():
             filas_lot, on_conflict="fecha,nombre").execute()
         conteo["loterias"] = len(filas_lot)
 
-    # Internacionales
-    hoy  = date.today().isoformat()
-    ayer = (date.today().replace(day=date.today().day - 1)).isoformat()
+    # Internacionales — usar zona horaria Colombia UTC-5
+    from datetime import timezone as _tz
+    _col = _tz(timedelta(hours=-5))
+    _ahora = datetime.now(_col)
+    hoy  = _ahora.date().isoformat()
+    ayer = (_ahora.date() - timedelta(days=1)).isoformat()
 
     filas_int = []
     for turno, claves, fecha in (
