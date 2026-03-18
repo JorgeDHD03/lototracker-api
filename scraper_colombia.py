@@ -53,6 +53,20 @@ LOTERIAS_NOCHE = {
 
 EXCLUIR_NOMBRES = {"pick 3", "pick 4"}
 
+# Loterías grandes — NO son chances, van en su propia sección
+LOTERIAS_GRANDES_NOMBRES = {
+    "lotería de bogotá", "lotería de medellín", "lotería del meta",
+    "lotería del tolima", "lotería de manizales", "lotería del quindío",
+    "lotería de santander", "lotería del huila", "lotería de la cruz roja",
+    "lotería del valle", "lotería de boyacá", "lotería del chocó",
+    "lotería de cundinamarca", "lotería del risaralda", "lotería de nariño",
+    "lotería dorada", "baloto", "superastro", "extra de colombia",
+    "lotería del cauca", "lotería de caldas", "lotería del cesar",
+    "lotería de córdoba", "lotería del magdalena", "lotería de nariño",
+    "lotería del pacifico", "lotería de sucre", "lotería del vichada",
+    "lotería", "loterias",
+}
+
 NOMBRES_COMPLETOS = {
     "culona día", "culona noche",
     "chontico día", "chontico noche", "super chontico noche",
@@ -102,7 +116,13 @@ def _es_noche(nombre: str) -> bool:
 
 
 def _es_excluido(nombre: str) -> bool:
-    return any(p in nombre.lower() for p in EXCLUIR_NOMBRES)
+    n = nombre.lower().strip()
+    if any(p in n for p in EXCLUIR_NOMBRES):
+        return True
+    # Excluir loterías grandes de la sección chances
+    if any(lg in n for lg in LOTERIAS_GRANDES_NOMBRES):
+        return True
+    return False
 
 
 def _generar_acronimo(nombre: str) -> str:
@@ -236,9 +256,10 @@ def obtener_sorteos_colombia() -> dict:
         if fecha is None:
             continue
 
-        # Aceptar fecha de ayer O de hoy (por si acaso publican el mismo día)
-        if fecha not in (ayer, hoy):
-            logger.debug(f"Lotería '{nombre}' ignorada: fecha {fecha} no es hoy ni ayer")
+        # Aceptar fecha de hasta 7 días atrás (loterías no juegan todos los días)
+        dias_diff = (hoy - fecha).days
+        if dias_diff < 0 or dias_diff > 7:
+            logger.debug(f"Lotería '{nombre}' ignorada: fecha {fecha} muy antigua")
             continue
 
         # Número: 4 spans con clase premio1
