@@ -117,11 +117,14 @@ def _generar_acronimo(nombre: str) -> str:
 
 
 def obtener_sorteos_colombia() -> dict:
-    hoy   = date.today()
+    from datetime import timezone
+    # Usar hora de Colombia (UTC-5) independientemente del servidor
+    colombia_tz = timezone(timedelta(hours=-5))
+    ahora_colombia = datetime.now(colombia_tz)
+    hoy   = ahora_colombia.date()
     ayer  = hoy - timedelta(days=1)
-    hora  = datetime.now().hour
-    # Si ya pasaron las 19:00, los sorteos noche de HOY ya pueden estar publicados
-    # Aceptamos fecha=hoy O fecha=ayer para NOCHE
+    hora  = ahora_colombia.hour
+    # Si ya pasaron las 19:00 hora Colombia, los sorteos noche ya pueden estar publicados
     noche_acepta_hoy = hora >= 19
     incluir_super_chontico = (ayer.weekday() == 3)  # solo jueves
 
