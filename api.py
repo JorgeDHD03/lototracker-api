@@ -1,245 +1,295 @@
 """
-api.py — LotoTracker API
-========================
-FastAPI que expone los scrapers de LotoTracker para ser consumidos
-desde la app móvil Flutter u otros clientes.
+Scraper para https://loteriasdehoy.co
 
-Endpoints:
-  GET  /              → health check
-  POST /consultar     → ejecuta scraping y guarda en Supabase
-  GET  /consultar     → igual pero sin body (para pruebas desde browser)
-  GET  /fechas        → fechas disponibles en Supabase
-  GET  /sorteos/{fecha} → sorteos de una fecha específica
+ESTRUCTURA HTML CONFIRMADA:
+
+CHANCES (div.chances_hoy):
+  span.chance1 x4 = número | span.premio5 x1 = serie opcional
+
+LOTERIAS GRANDES (div.loterias_resultados):
+  span.redondoc.premio1 x4 = número | span.redondoc.serie1 x3 = serie
+
+REGLA DE FECHAS:
+  DIA      → fecha = HOY
+  NOCHE    → fecha = AYER  (loterías nocturnas, se publican al día siguiente)
+  LOTERIAS → fecha = AYER  (loterías grandes también se publican al día siguiente)
 """
 
-import os
+from curl_cffi import requests
+from bs4 import BeautifulSoup
+from datetime import date, datetime, timedelta
+import re
 import logging
-from datetime import date, datetime
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client, Client
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Supabase ─────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    "https://vtzcovlgccsjsbqvxcqx.supabase.co"
-)
-SUPABASE_KEY = os.environ.get(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0emNvdmxnY2NzanNicXZ4Y3F4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NDkzNjQsImV4cCI6MjA4OTAyNTM2NH0."
-    "47VgTctMZw4WUJiWr8_dMW5lZx60vdpvDqT9v4bWLfg"
-)
+URL = "https://loteriasdehoy.co"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    )
+}
 
-def _sb() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+    "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+    "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+}
 
-# ── FastAPI ───────────────────────────────────────────────────
-app = FastAPI(
-    title="LotoTracker API",
-    description="Scraping de sorteos colombianos e internacionales",
-    version="1.0.0"
-)
+LOTERIAS_NOCHE = {
+    "astro luna",
+    "caribeña noche",
+    "sinuano noche",
+    "motilon noche",
+    "fantastica noche",
+    "culona noche",
+    "cafeterito noche",
+    "chontico noche",
+    "super chontico noche",
+    "paisita noche",
+}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+EXCLUIR_NOMBRES = {"pick 3", "pick 4"}
+
+# Loterías grandes — NO son chances, van en su propia sección
+LOTERIAS_GRANDES_NOMBRES = {
+    "lotería de bogotá", "lotería de medellín", "lotería del meta",
+    "lotería del tolima", "lotería de manizales", "lotería del quindío",
+    "lotería de santander", "lotería del huila", "lotería de la cruz roja",
+    "lotería del valle", "lotería de boyacá", "lotería del chocó",
+    "lotería de cundinamarca", "lotería del risaralda", "lotería de nariño",
+    "lotería dorada", "baloto", "superastro", "extra de colombia",
+    "lotería del cauca", "lotería de caldas", "lotería del cesar",
+    "lotería de córdoba", "lotería del magdalena", "lotería de nariño",
+    "lotería del pacifico", "lotería de sucre", "lotería del vichada",
+    "lotería", "loterias",
+}
+
+NOMBRES_COMPLETOS = {
+    "culona día", "culona noche",
+    "chontico día", "chontico noche", "super chontico noche",
+    "saman",
+}
+
+ACRONIMOS_FIJOS = {
+    "cafeterito noche":  "CFN",
+    "cafeterito tarde":  "CF",
+    "caribeña día":      "C",
+    "caribeña noche":    "CN",
+    "sinuano día":       "S",
+    "sinuano noche":     "SN",
+    "antioqueñita 1":    "AM",
+    "antioqueñita 2":    "AT",
+    "dorado mañana":     "DM",
+    "dorado tarde":      "DT",
+    "dorado noche":      "DN",
+    "motilon tarde":     "MT",
+    "motilon noche":     "MTN",
+    "paisita día":       "P",
+    "paisita noche":     "PN",
+    "fantastica día":    "F",
+    "fantastica noche":  "FN",
+    "pijao de oro":      "PJ",
+    "astro sol":         "AS",
+    "astro luna":        "AL",
+}
 
 
-# ── Health check ─────────────────────────────────────────────
-@app.get("/")
-def health():
-    return {"status": "ok", "fecha": date.today().isoformat()}
-
-
-# ── Consultar y guardar ──────────────────────────────────────
-@app.get("/consultar")
-@app.post("/consultar")
-def consultar():
-    """
-    Ejecuta el scraping de loteriasdehoy.co y lotteryusa.com,
-    luego guarda los resultados en Supabase.
-    Retorna un resumen de lo guardado.
-    """
+def _parsear_fecha(texto: str):
+    texto = re.sub(r"\bde\b", "", texto.lower().strip())
+    partes = texto.split()
     try:
-        from scraper_colombia import obtener_sorteos_colombia
-        from scraper_internacional import obtener_sorteos_internacional
-    except ImportError as e:
-        raise HTTPException(500, f"Error importando scrapers: {e}")
+        dia  = int(partes[0])
+        mes  = MESES_ES.get(partes[1])
+        anio = int(partes[2])
+        if mes:
+            return date(anio, mes, dia)
+    except (IndexError, ValueError):
+        pass
+    return None
 
-    # ── Scraping ─────────────────────────────────────────────
-    try:
-        logger.info("Iniciando scraping Colombia...")
-        data_col = obtener_sorteos_colombia()
-    except Exception as e:
-        logger.error(f"Error scraping Colombia: {e}")
-        data_col = {"DIA": [], "NOCHE": [], "LOTERIAS": []}
 
-    try:
-        logger.info("Iniciando scraping Internacional...")
-        data_int = obtener_sorteos_internacional()
-    except Exception as e:
-        logger.error(f"Error scraping Internacional: {e}")
-        data_int = {}
+def _es_noche(nombre: str) -> bool:
+    return any(ln in nombre.lower().strip() for ln in LOTERIAS_NOCHE)
 
-    # ── Guardar en Supabase ───────────────────────────────────
-    sb = _sb()
-    conteo = {"chances": 0, "loterias": 0, "int": 0}
 
-    # Chances DÍA y NOCHE
-    filas_chances = []
-    for turno in ("DIA", "NOCHE"):
-        for s in data_col.get(turno, []):
-            filas_chances.append({
-                "fecha":    s.get("fecha", date.today().isoformat()),
-                "turno":    turno,
-                "nombre":   s["nombre"],
-                "acronimo": s.get("acronimo"),
-                "numero":   s["numero"],
-                "serie":    s.get("serie"),
-                "signo":    s.get("signo"),
-            })
-    if filas_chances:
-        sb.table("sorteos_chances").upsert(
-            filas_chances, on_conflict="fecha,turno,nombre").execute()
-        conteo["chances"] = len(filas_chances)
+def _es_excluido(nombre: str) -> bool:
+    n = nombre.lower().strip()
+    if any(p in n for p in EXCLUIR_NOMBRES):
+        return True
+    # Excluir loterías grandes de la sección chances
+    if any(lg in n for lg in LOTERIAS_GRANDES_NOMBRES):
+        return True
+    return False
 
-    # Loterías grandes
-    filas_lot = []
-    for s in data_col.get("LOTERIAS", []):
-        filas_lot.append({
-            "fecha":    s.get("fecha", date.today().isoformat()),
-            "nombre":   s["nombre"],
-            "acronimo": s.get("acronimo"),
-            "numero":   s["numero"],
-            "serie":    s.get("serie"),
+
+def _generar_acronimo(nombre: str) -> str:
+    clave = nombre.lower().strip()
+    if clave in NOMBRES_COMPLETOS:
+        return nombre.strip()
+    if clave in ACRONIMOS_FIJOS:
+        return ACRONIMOS_FIJOS[clave]
+    palabras = nombre.split()
+    acronimo = "".join(p[0].upper() for p in palabras if p and p[0].isalpha())
+    return acronimo[:4] if acronimo else "??"
+
+
+def obtener_sorteos_colombia() -> dict:
+    from datetime import timezone
+    # Usar hora de Colombia (UTC-5) independientemente del servidor
+    colombia_tz = timezone(timedelta(hours=-5))
+    ahora_colombia = datetime.now(colombia_tz)
+    hoy   = ahora_colombia.date()
+    ayer  = hoy - timedelta(days=1)
+    hora  = ahora_colombia.hour
+    # Si ya pasaron las 19:00 hora Colombia, los sorteos noche ya pueden estar publicados
+    noche_acepta_hoy = hora >= 19
+    incluir_super_chontico = (ayer.weekday() == 3)  # solo jueves
+
+    r = requests.get(URL, headers=HEADERS, timeout=15, impersonate="chrome110")
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    data = {"DIA": [], "NOCHE": [], "LOTERIAS": []}
+    _noche_tiene_hoy = False
+
+    # ── 1) CHANCES ──────────────────────────────────────────
+    for bloque in soup.select("div.chances_hoy"):
+        titulo_tag = bloque.select_one("div.titulo_chances_hoy")
+        if not titulo_tag:
+            continue
+        nombre = titulo_tag.get_text(strip=True)
+
+        if _es_excluido(nombre):
+            continue
+        if "super chontico" in nombre.lower() and not incluir_super_chontico:
+            continue
+
+        fecha_tag = bloque.select_one("div.fecha_resultado")
+        if not fecha_tag:
+            continue
+        fecha = _parsear_fecha(fecha_tag.get_text(strip=True))
+        if fecha is None:
+            continue
+
+        es_nocturno = _es_noche(nombre)
+        if es_nocturno:
+            # NOCHE: acepta ayer siempre; acepta hoy si ya son >= 19:00
+            if fecha == ayer:
+                pass  # normal
+            elif fecha == hoy and noche_acepta_hoy:
+                pass  # resultados de esta noche ya disponibles
+            else:
+                continue
+        else:
+            # DÍA: solo fecha de hoy
+            if fecha != hoy:
+                continue
+
+        resultado_div = bloque.select_one("div.resultado_chances_hoy")
+        if not resultado_div:
+            continue
+
+        # Número: spans chance1 (4 dígitos)
+        spans = resultado_div.select("span.chance1")
+        if not spans:
+            spans = resultado_div.select("span.redondoc")
+        digitos = [s.get_text(strip=True) for s in spans if s.get_text(strip=True).isdigit()]
+
+        if len(digitos) < 4:
+            continue
+
+        numero = "".join(digitos[:4])
+
+        # Serie: span.premio5
+        serie = None
+        span_serie = resultado_div.select_one("span.premio5")
+        if span_serie:
+            t = span_serie.get_text(strip=True)
+            if t.isdigit():
+                serie = t
+
+        # Signo zodiacal
+        signo = None
+        m = re.search(r"-\s*([A-Za-záéíóúÁÉÍÓÚñÑ]+)", resultado_div.get_text(strip=True))
+        if m:
+            signo = m.group(1).strip()
+
+        item = {
+            "numero":   numero,
+            "acronimo": _generar_acronimo(nombre),
+            "nombre":   nombre,
+            "serie":    serie,
+            "signo":    signo,
+            "fecha":    fecha.isoformat(),
+        }
+        # Deduplicar: la página muestra cada lotería varias veces ordenada de más
+        # reciente a más antigua. Solo guardar la primera aparición de cada nombre.
+        if es_nocturno:
+            if nombre.lower() not in {x["nombre"].lower() for x in data["NOCHE"]}:
+                data["NOCHE"].append(item)
+                if fecha == hoy:
+                    _noche_tiene_hoy = True
+        else:
+            if nombre.lower() not in {x["nombre"].lower() for x in data["DIA"]}:
+                data["DIA"].append(item)
+
+    # Si NOCHE tiene resultados de HOY, descartar los de AYER para no mezclar fechas
+    if _noche_tiene_hoy:
+        data["NOCHE"] = [s for s in data["NOCHE"] if s["fecha"] == hoy.isoformat()]
+
+    # ── 2) LOTERÍAS GRANDES → fecha de AYER ─────────────────
+    # Confirmado: la página publica las loterías grandes con fecha
+    # del día anterior (ej: hoy es martes 3, muestra "2 Marzo 2026")
+    for bloque in soup.select("div.loterias_resultados"):
+        h3 = bloque.find("h3")
+        if not h3:
+            continue
+        nombre = h3.get_text(strip=True).strip()
+
+        fecha_tag = bloque.select_one("div.fecha_resultado")
+        if not fecha_tag:
+            continue
+        fecha = _parsear_fecha(fecha_tag.get_text(strip=True))
+        if fecha is None:
+            continue
+
+        # Aceptar fecha de hasta 7 días atrás (loterías no juegan todos los días)
+        dias_diff = (hoy - fecha).days
+        if dias_diff < 0 or dias_diff > 7:
+            logger.debug(f"Lotería '{nombre}' ignorada: fecha {fecha} muy antigua")
+            continue
+
+        # Número: 4 spans con clase premio1
+        spans_numero = bloque.select("span.premio1")
+        digitos_numero = [s.get_text(strip=True) for s in spans_numero
+                          if s.get_text(strip=True).isdigit()]
+
+        if len(digitos_numero) < 4:
+            logger.debug(f"Lotería '{nombre}': solo {len(digitos_numero)} dígitos")
+            continue
+
+        numero = "".join(digitos_numero[:4])
+
+        # Serie: spans con clase serie1 (3 dígitos)
+        spans_serie = bloque.select("span.serie1")
+        digitos_serie = [s.get_text(strip=True) for s in spans_serie
+                         if s.get_text(strip=True).isdigit()]
+        serie = "".join(digitos_serie) if digitos_serie else None
+
+        data["LOTERIAS"].append({
+            "numero":   numero,
+            "acronimo": _generar_acronimo(nombre),
+            "nombre":   nombre,
+            "serie":    serie,
+            "signo":    None,
+            "fecha":    fecha.isoformat(),
         })
-    if filas_lot:
-        sb.table("sorteos_loterias").upsert(
-            filas_lot, on_conflict="fecha,nombre").execute()
-        conteo["loterias"] = len(filas_lot)
 
-    # Internacionales
-    hoy  = date.today().isoformat()
-    ayer = (date.today().replace(day=date.today().day - 1)).isoformat()
-
-    filas_int = []
-    for turno, claves, fecha in (
-        ("DIA",   ("P3_DIA",   "P4_DIA",   "WM",  None),  hoy),
-        ("NOCHE", ("P3_NOCHE", "P4_NOCHE", "WN",  "EV"),  ayer),
-    ):
-        p3k, p4k, wk, evk = claves
-        fila = {
-            "fecha": fecha,
-            "turno": turno,
-            "p3":    data_int.get(p3k),
-            "p4":    data_int.get(p4k),
-            "wm_wn": data_int.get(wk),
-            "ev":    data_int.get(evk) if evk else None,
-        }
-        if any(v is not None for k, v in fila.items() if k not in ("fecha","turno")):
-            filas_int.append(fila)
-
-    if filas_int:
-        sb.table("sorteos_int").upsert(
-            filas_int, on_conflict="fecha,turno").execute()
-        conteo["int"] = len(filas_int)
-
-    total = conteo["chances"] + conteo["loterias"] + conteo["int"]
-    logger.info(f"Guardado OK: {conteo}")
-
-    return {
-        "ok": True,
-        "fecha": hoy,
-        "guardado": conteo,
-        "total": total,
-        "sorteos": {
-            "dia":      data_col.get("DIA", []),
-            "noche":    data_col.get("NOCHE", []),
-            "loterias": data_col.get("LOTERIAS", []),
-            "int":      data_int,
-        }
-    }
-
-
-# ── Fechas disponibles ────────────────────────────────────────
-@app.get("/fechas")
-def fechas():
-    """Retorna todas las fechas con datos en Supabase."""
-    sb = _sb()
-    res1 = sb.table("sorteos_chances").select("fecha").execute()
-    res2 = sb.table("sorteos_loterias").select("fecha").execute()
-    res3 = sb.table("sorteos_int").select("fecha").execute()
-
-    todas = set()
-    for r in [*res1.data, *res2.data, *res3.data]:
-        if r.get("fecha"):
-            todas.add(r["fecha"])
-
-    return {"fechas": sorted(todas, reverse=True)}
-
-
-# ── Sorteos de una fecha ──────────────────────────────────────
-@app.get("/sorteos/{fecha}")
-def sorteos_fecha(fecha: str):
-    """
-    Retorna todos los sorteos de una fecha ISO (YYYY-MM-DD).
-    """
-    sb = _sb()
-
-    chances  = sb.table("sorteos_chances").select("*").eq("fecha", fecha).order("id").execute()
-    loterias = sb.table("sorteos_loterias").select("*").eq("fecha", fecha).order("id").execute()
-    ints     = sb.table("sorteos_int").select("*").eq("fecha", fecha).execute()
-
-    return {
-        "fecha":    fecha,
-        "dia":      [r for r in chances.data  if r["turno"] == "DIA"],
-        "noche":    [r for r in chances.data  if r["turno"] == "NOCHE"],
-        "loterias": loterias.data,
-        "int":      ints.data,
-    }
-
-
-@app.get("/debug_html")
-def debug_html():
-    """Retorna fragmentos del HTML de chancehoy para diagnóstico."""
-    try:
-        from curl_cffi import requests as creq
-        from bs4 import BeautifulSoup
-        import re
-        resp = creq.get(
-            "https://www.chancehoy.com/",
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            timeout=20,
-            impersonate="chrome110"
-        )
-        html = resp.text
-        soup = BeautifulSoup(html, "lxml")
-        # Find all links to sorteos
-        links = soup.find_all("a", href=re.compile(r"/sorteo"))
-        link_samples = []
-        for a in links[:5]:
-            link_samples.append({
-                "href": a.get("href"),
-                "text": a.get_text(separator="|").strip()[:100]
-            })
-        # Find number patterns
-        nums = re.findall(r"\d{4}", html)[:20]
-        # Sample from middle of HTML
-        mid = len(html)//2
-        return {
-            "status": resp.status_code,
-            "html_length": len(resp.text),
-            "sorteo_links_found": len(links),
-            "link_samples": link_samples,
-            "numbers_found": nums,
-            "html_mid_500": html[mid:mid+500],
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    logger.info(
+        f"DIA: {len(data['DIA'])} | NOCHE: {len(data['NOCHE'])} "
+        f"| LOTERIAS: {len(data['LOTERIAS'])}"
+    )
+    return data
